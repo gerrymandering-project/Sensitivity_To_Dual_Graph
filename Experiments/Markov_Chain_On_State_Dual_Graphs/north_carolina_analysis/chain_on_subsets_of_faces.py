@@ -145,21 +145,20 @@ def face_sierpinski_mesh(graph, special_faces):
         siblings = tuple(newEdges)
         for edge in newEdges:
             graph.edges[edge]['siblings'] = siblings
-def convex_proposal(graph):
-# Two proposal moves
-# 1) Delete an edge-- picks an edge uniformly at random, and checks if
-# the union of the two faces adjacent to it is convex. (
-# https://stackoverflow.com/a/45372025/6114885  ). If not, reject.
-# Otherwise, delete that edge.
-# 2) Pick a face at random, and two vertices in the face. Add an edge
-# between the two vertices (thought of as a straight line).
-    edges = list(graph.edges)
-    chosen_edge = random.choice(edges)
-   #need to find face that corresponds with edge 
-    faces = graph.graph["faces"]
-    faces = list(faces)
-    graph.remove_edge(chosen_edge[0], chosen_edge[1])
+def add_edge_proposal(graph, special_faces):
+    """Takes set of 4 edge faces, and adds an edge.
 
+    Args:
+        graph (Gerrychain Graph): graph in JSON file following cleaning
+        special_faces (List): list of four sided faces
+    """
+    for face in special_faces:
+        for vertex in face:
+            for itr_vertex in face:
+                if ((not graph.has_edge(vertex, itr_vertex)) and (not graph.has_edge(itr_vertex, vertex)) and vertex != vertex):
+                    graph.add_edge(vertex, itr_vertex)
+                    break
+        
 
 def preprocessing(path_to_json):
     """Takes file path to JSON graph, and returns the appropriate
@@ -178,7 +177,7 @@ def preprocessing(path_to_json):
                                     graph.nodes[node][config['Y_POSITION']])
 
     save_fig(graph, config['UNDERLYING_GRAPH_FILE'], config['WIDTH'])
-
+    #restricted planar dual does not include unbounded face
     dual = facefinder.restricted_planar_dual(graph)
 
     return graph, dual
@@ -199,15 +198,14 @@ def save_fig(graph, path, size):
     plt.close()
 
 def main():
-     """ Contains majority of expermiment. Runs a markov chain on the state dual graph, determining how the distribution is affected to changes in the 
+    """ Contains majority of expermiment. Runs a markov chain on the state dual graph, determining how the distribution is affected to changes in the 
      state dual graph.
      Raises:
         RuntimeError if PROPOSAL_TYPE of config file is neither 'sierpinski'
         nor 'convex'
     """
-    #k is num districts
-    k = config["NUM_DISTRICTS"]
     epsilon = config["epsilon"]
+    k = config["NUM_DISTRICTS"]
     updaters = {'population': Tally('population'),
                             'cut_edges': cut_edges,
                             }
@@ -237,7 +235,9 @@ def main():
         special_faces_proposal = copy.deepcopy(special_faces)
         proposal_graph = copy.deepcopy(graph)
         z += 1
-        for i in range(math.floor(len(faces) * config['PERCENT_FACES'])):
+        square_faces = [face for face in faces if len(face) == 4]
+        if (config["PROPOSAL_TYPE"] == "sierpinski"):
+            for i in range(math.floor(len(faces) * config['PERCENT_FACES'])):
                 face = random.choice(faces)
                 ##Makes the Markov chain lazy -- this just makes the chain aperiodic.
                 if random.random() > .5:
@@ -245,13 +245,18 @@ def main():
                         special_faces_proposal.append(face)
                     else:
                         special_faces_proposal.remove(face)
-        if (config["PROPOSAL_TYPE"] == "sierpinski"):
             face_sierpinski_mesh(proposal_graph, special_faces_proposal)
-
-        elif(config["PROPOSAL_TYPE"] == "convex"):
-            #TODO: complete convex proposal function
-            convex_proposal(proposal_graph)
-
+        elif(config["PROPOSAL_TYPE"] == "add_edge"):
+            for i in range(math.floor(len(square_faces) * config['PERCENT_FACES'])):
+                face = random.choice(square_faces)
+                ##Makes the Markov chain lazy -- this just makes the chain aperiodic.
+                if random.random() > .5:
+                    if not (face in special_faces_proposal):
+                        special_faces_proposal.append(face)
+                    else:
+                        special_faces_proposal.remove(face)
+            add_edge_proposal(proposal_graph, special_faces_proposal)
+            facefinder.save_fig(proposal_graph,"./plots/edge_proposal_test.png",1)
         else:
             raise RuntimeError('PROPOSAL TYPE must be "sierpinski" or "convex"')
 
@@ -331,10 +336,10 @@ if __name__ ==  '__main__':
         'GERRYCHAIN_STEPS' : 25,
         'CHAIN_STEPS' : 150,
         'TEMPERATURE' : 100,
-        "NUM_DISTRICTS": 12,
-        'STATE_NAME': 'North Carolina',
-        'PERCENT_FACES': .5,
-        'PROPOSAL_TYPE': "sierpinski",
+        "NUM_DISTRICTS": 13,
+        'STATE_NAME': 'north_carolina',
+        'PERCENT_FACES': .05,
+        'PROPOSAL_TYPE': "add_edge",
         'epsilon': .01
     }
     # Seanna: so in here the number of districts is 12 (maybe we want to revise it?)

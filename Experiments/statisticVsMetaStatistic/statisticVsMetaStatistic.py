@@ -296,8 +296,8 @@ def runMetamander(graph, assignment, dual, config, id):
     with open(config['DATA_FILE_LOCATION'], 'rb+') as filehandle:
         filehandle.seek(-1, os.SEEK_END)
         filehandle.truncate()
-    with open(config['DATA_FILE_LOCATION'], 'a') as f:
-        if id == 0:
+    with open(config['DATA_FILE_LOCATION'], 'r+') as f:
+        if f.read() == '[':
             f.write(json.dumps(statistics, indent=2) + ']')
         else:
             f.write(', ' + json.dumps(statistics, indent=2) + ']')
@@ -336,9 +336,9 @@ def main():
         'METADATA_FILE' : 'config',
         'DATA_FILE' : 'data',
         'NUM_PROCESSORS' : 4,
-        'NUM_SAMPLE_PARTITIONS' : 10000,
-        'STEPS_IN_BETWEEN_SAMPLES' : 20000,
-        'META_RUN_LENGTH': 50000,
+        'NUM_SAMPLE_PARTITIONS' : 10, # TODO 10000
+        'STEPS_IN_BETWEEN_SAMPLES' : 20, # TODO 20000
+        'META_RUN_LENGTH': 50, # TODO 50000
     }
     try:
         timeBeg = time.time()
@@ -369,9 +369,9 @@ def main():
         chain = MarkovChain(tree_proposal, Validator([popbound]), accept=accept.always_accept, initial_state=initPartition,
                                 total_steps=config['NUM_SAMPLE_PARTITIONS'] * config['STEPS_IN_BETWEEN_SAMPLES'])
 
-        # Run NUM_EXPERIMENTS experiments using NUM_PROCESSORS processors
+        # Run NUM_EXPERIMENTS experiments using NUM_PROCESSORS - 1 extra processors
         l = Lock()
-        pool = Pool(config['NUM_PROCESSORS'], initializer=init, initargs=(l,))
+        pool = Pool(config['NUM_PROCESSORS'] - 1, initializer=init, initargs=(l,))
         for i, partition in enumerate(chain):
             if i != 0 and i % config['STEPS_IN_BETWEEN_SAMPLES'] == 0:
                 res = pool.apply_async(runMetamander, args = (graph, partition.assignment, dual, config, i, ))

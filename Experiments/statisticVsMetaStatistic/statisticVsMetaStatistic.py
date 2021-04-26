@@ -44,6 +44,7 @@ def face_sierpinski_mesh(partition, special_faces):
     graph = partition.graph
     # Get maximum node label.
     label = max(list(graph.nodes()))
+
     # Assign each node to its district in partition
     for node in graph.nodes():
         graph.nodes[node][config['ASSIGN_COL']] = partition.assignment[node]
@@ -146,8 +147,36 @@ def face_sierpinski_mesh(partition, special_faces):
         for edge in newEdges:
             graph.edges[edge]['siblings'] = siblings
 
+def createGridGraph(config):
+    gridSize = config['GRID_SIZE']
+    numDistricts = config['NUM_DISTRICTS']
+    percentPartyA = config['PERCENT_PARTY_A']
 
-def preprocessing(path_to_json):
+    graph=nx.grid_graph([gridSize,gridSize])
+
+    for i, n in enumerate(graph.nodes()):
+        graph.nodes[n][config["POP_COL"]]=1
+        graph.nodes[n][config["ASSIGN_COL"]] = int((numDistricts * i)/(gridSize**2))
+        graph.nodes[n][config['X_POSITION']] = i % gridSize
+        graph.nodes[n][config['Y_POSITION']] = int(i / gridSize)
+
+        if i < ((gridSize) ** 2) * percentPartyA:
+            graph.nodes[n][config["PARTY_A_COL"]]=1
+            graph.nodes[n][config["PARTY_B_COL"]]=0
+        else:
+            graph.nodes[n][config["PARTY_A_COL"]]=0
+            graph.nodes[n][config["PARTY_B_COL"]]=1
+        if 0 in n or gridSize-1 in n:
+            graph.nodes[n]["boundary_node"]=True
+            graph.nodes[n]["boundary_perim"]=1
+        else:
+            graph.nodes[n]["boundary_node"]=False
+
+    labels = {x: (gridSize*x[1] + x[0]) for x in graph.nodes()}
+    graph = nx.relabel_nodes(graph, labels)
+    return graph
+
+def preprocessing(config):
     """Takes file path to JSON graph, and returns the appropriate
 
     Args:
@@ -157,7 +186,10 @@ def preprocessing(path_to_json):
         graph (Gerrychain Graph): graph in JSON file following cleaning
         dual (Gerrychain Graph): planar dual of graph
     """
-    graph = Graph.from_json(path_to_json)
+    if config['INPUT_GRAPH_FILENAME'] == 'GRID_GRAPH':
+        graph = createGridGraph(config)
+    else:
+        graph = Graph.from_json(config['INPUT_GRAPH_FILENAME'])
     # For each node in graph, set 'pos' keyword to position
     for node in graph.nodes():
         graph.nodes[node]['pos'] = (graph.nodes[node][config['X_POSITION']],
@@ -240,68 +272,73 @@ def createDirectory(config):
     return dataFile
 
 def runMetamander(graph, assignment, dual, config, id):
-    metamander_around_partition(graph, assignment, dual)
-    # Initialize partition
-    election = Election(
-                        config['ELECTION_NAME'],
-                        {'PartyA': config['PARTY_A_COL'],
-                        'PartyB': config['PARTY_B_COL']}
-                        )
+    try:
+        metamander_around_partition(graph, assignment, dual)
+        # Initialize partition
+        election = Election(
+                            config['ELECTION_NAME'],
+                            {'PartyA': config['PARTY_A_COL'],
+                            'PartyB': config['PARTY_B_COL']}
+                            )
 
-    updaters = {'population': Tally(config['POP_COL']),
-                # 'cut_edges': cut_edges,
-                config['ELECTION_NAME'] : election,
-                }
-    partition = Partition(graph, assignment=config['ASSIGN_COL'], updaters=updaters)
-    # List of districts in original graph
-    parts = list(set([graph.nodes[node][config['ASSIGN_COL']] for node in graph.nodes()]))
-    # Ideal population of districts
-    ideal_pop = sum([graph.nodes[node][config['POP_COL']] for node in graph.nodes()]) / len(parts)
-    popbound = within_percent_of_ideal_population(partition, config['EPSILON'])
-    # Determine proposal for generating spanning tree based upon parameter
-    if config['CHAIN_TYPE'] == "tree":
-        tree_proposal = partial(recom, pop_col=config["POP_COL"], pop_target=ideal_pop,
-                           epsilon=config['EPSILON'], node_repeats=config['NODE_REPEATS'])
+        updaters = {'population': Tally(config['POP_COL']),
+                    # 'cut_edges': cut_edges,
+                    config['ELECTION_NAME'] : election,
+                    }
+        partition = Partition(graph, assignment=config['ASSIGN_COL'], updaters=updaters)
+        # List of districts in original graph
+        parts = list(set([graph.nodes[node][config['ASSIGN_COL']] for node in graph.nodes()]))
+        # Ideal population of districts
+        ideal_pop = sum([graph.nodes[node][config['POP_COL']] for node in graph.nodes()]) / len(parts)
+        popbound = within_percent_of_ideal_population(partition, config['EPSILON'])
+        # Determine proposal for generating spanning tree based upon parameter
+        if config['CHAIN_TYPE'] == "tree":
+            tree_proposal = partial(recom, pop_col=config["POP_COL"], pop_target=ideal_pop,
+                            epsilon=config['EPSILON'], node_repeats=config['NODE_REPEATS'])
 
-    elif config['CHAIN_TYPE'] == "uniform_tree":
-        tree_proposal = partial(recom, pop_col=config["POP_COL"], pop_target=ideal_pop,
-                           epsilon=config['EPSILON'], node_repeats=config['NODE_REPEATS'])
-    else:
-        print("Chaintype used: ", config['CHAIN_TYPE'])
-        raise RuntimeError("Chaintype not recognized. Use 'tree' or 'uniform_tree' instead")
-
-    # Chain to be run
-    chain = MarkovChain(tree_proposal, Validator([popbound]), accept=accept.always_accept, initial_state=partition,
-                            total_steps=config['META_RUN_LENGTH'])
-
-    electionDict = {
-        'seats' : (lambda x: x[config['ELECTION_NAME']].seats('PartyA')),
-        'won' : (lambda x: x[config['ELECTION_NAME']].seats('PartyA')),
-        'efficiency_gap' : (lambda x: x[config['ELECTION_NAME']].efficiency_gap()),
-        'mean_median' : (lambda x: x[config['ELECTION_NAME']].mean_median()),
-        'mean_thirdian' : (lambda x: x[config['ELECTION_NAME']].mean_thirdian()),
-        'partisan_bias' : (lambda x: x[config['ELECTION_NAME']].partisan_bias()),
-        'partisan_gini' : (lambda x: x[config['ELECTION_NAME']].partisan_gini())
-    }
-
-    # Run chain, save each desired statistic
-    statistics = {statistic : [] for statistic in config['ELECTION_STATISTICS']}
-    for i, part in enumerate(chain):
-        # Save statistics of partition
-        for statistic in config['ELECTION_STATISTICS']:
-            statistics[statistic].append(electionDict[statistic](part))
-        if i % 500 == 0:
-            print('{}: {}'.format(id, i))
-    lock.acquire()
-    with open(config['DATA_FILE_LOCATION'], 'rb+') as filehandle:
-        filehandle.seek(-1, os.SEEK_END)
-        filehandle.truncate()
-    with open(config['DATA_FILE_LOCATION'], 'r+') as f:
-        if f.read() == '[':
-            f.write(json.dumps(statistics, indent=2) + ']')
+        elif config['CHAIN_TYPE'] == "uniform_tree":
+            tree_proposal = partial(recom, pop_col=config["POP_COL"], pop_target=ideal_pop,
+                            epsilon=config['EPSILON'], node_repeats=config['NODE_REPEATS'])
         else:
-            f.write(', ' + json.dumps(statistics, indent=2) + ']')
-    lock.release()
+            print("Chaintype used: ", config['CHAIN_TYPE'])
+            raise RuntimeError("Chaintype not recognized. Use 'tree' or 'uniform_tree' instead")
+
+        # Chain to be run
+        chain = MarkovChain(tree_proposal, Validator([popbound]), accept=accept.always_accept, initial_state=partition,
+                                total_steps=config['META_RUN_LENGTH'])
+
+        electionDict = {
+            'seats' : (lambda x: x[config['ELECTION_NAME']].seats('PartyA')),
+            'won' : (lambda x: x[config['ELECTION_NAME']].seats('PartyA')),
+            'efficiency_gap' : (lambda x: x[config['ELECTION_NAME']].efficiency_gap()),
+            'mean_median' : (lambda x: x[config['ELECTION_NAME']].mean_median()),
+            'mean_thirdian' : (lambda x: x[config['ELECTION_NAME']].mean_thirdian()),
+            'partisan_bias' : (lambda x: x[config['ELECTION_NAME']].partisan_bias()),
+            'partisan_gini' : (lambda x: x[config['ELECTION_NAME']].partisan_gini())
+        }
+
+        # Run chain, save each desired statistic
+        statistics = {statistic : [] for statistic in config['ELECTION_STATISTICS']}
+        for i, part in enumerate(chain):
+            # Save statistics of partition
+            for statistic in config['ELECTION_STATISTICS']:
+                statistics[statistic].append(electionDict[statistic](part))
+            if i % 500 == 0:
+                print('{}: {}'.format(id, i))
+        lock.acquire()
+        with open(config['DATA_FILE_LOCATION'], 'rb+') as filehandle:
+            filehandle.seek(-1, os.SEEK_END)
+            filehandle.truncate()
+        with open(config['DATA_FILE_LOCATION'], 'r+') as f:
+            if f.read() == '[':
+                f.write(json.dumps(statistics, indent=2) + ']')
+            else:
+                f.write(', ' + json.dumps(statistics, indent=2) + ']')
+        lock.release()
+    except Exception as e:
+        # Print notification if any experiment fails to complete
+        track = traceback.format_exc()
+        print(id, track)
 
 def init(l):
     global lock
@@ -321,7 +358,7 @@ def main():
     config = {
         "POP_COL" : "population",
         "ASSIGN_COL" : "part",
-        "INPUT_GRAPH_FILENAME" : "./inputData/NC.json",
+        "INPUT_GRAPH_FILENAME" : "GRID_GRAPH",
         "X_POSITION" : "C_X",
         "Y_POSITION" : "C_Y",
         'EPSILON' : 0.01,
@@ -336,15 +373,18 @@ def main():
         'METADATA_FILE' : 'config',
         'DATA_FILE' : 'data',
         'NUM_PROCESSORS' : 4,
-        'NUM_SAMPLE_PARTITIONS' : 10, # TODO 10000
-        'STEPS_IN_BETWEEN_SAMPLES' : 20, # TODO 20000
-        'META_RUN_LENGTH': 50, # TODO 50000
+        'NUM_SAMPLE_PARTITIONS' : 10,
+        'STEPS_IN_BETWEEN_SAMPLES' : 20,
+        'META_RUN_LENGTH': 50,
+        'GRID_SIZE': 30,
+        'NUM_DISTRICTS': 6,
+        'PERCENT_PARTY_A': 0.45,
     }
     try:
         timeBeg = time.time()
         config['DATA_FILE_LOCATION'] = createDirectory(config)
         # Get graph and dual graph
-        graph, dual = preprocessing(config["INPUT_GRAPH_FILENAME"])
+        graph, dual = preprocessing(config)
         # List of districts in original graph
         parts = list(set([graph.nodes[node][config['ASSIGN_COL']] for node in graph.nodes()]))
         # Ideal population of districts
@@ -374,7 +414,7 @@ def main():
         pool = Pool(config['NUM_PROCESSORS'] - 1, initializer=init, initargs=(l,))
         for i, partition in enumerate(chain):
             if i != 0 and i % config['STEPS_IN_BETWEEN_SAMPLES'] == 0:
-                res = pool.apply_async(runMetamander, args = (graph, partition.assignment, dual, config, i, ))
+                pool.apply_async(runMetamander, args = (graph, partition.assignment, dual, config, i, ))
         pool.close()
         pool.join()
         print('All experiments completed in {:.2f} seconds'.format(time.time() - timeBeg))
